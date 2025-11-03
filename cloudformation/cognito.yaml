@@ -1,0 +1,269 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'AWS Cognito User Pool and App Client for Open WebUI authentication'
+
+Parameters:
+  EnvironmentName:
+    Type: String
+    Description: Environment name prefix for resources
+    Default: open-webui
+  
+  CallbackURL:
+    Type: String
+    Description: Base OAuth callback URL without path (e.g., https://your-domain.com)
+    AllowedPattern: ^https?://[^/]+$
+    ConstraintDescription: Must be a valid HTTP or HTTPS URL without trailing path
+  
+  LogoutURL:
+    Type: String
+    Description: OAuth logout URL (e.g., https://your-domain.com)
+    Default: ''
+    AllowedPattern: ^(https?://.*)?$
+    ConstraintDescription: Must be a valid HTTP or HTTPS URL or empty
+  
+  CognitoDomainPrefix:
+    Type: String
+    Description: Unique domain prefix for Cognito hosted UI (must be globally unique)
+    AllowedPattern: ^[a-z0-9-]+$
+    ConstraintDescription: Must contain only lowercase letters, numbers, and hyphens
+    MinLength: 1
+    MaxLength: 63
+  
+  EnableMFA:
+    Type: String
+    Description: Enable Multi-Factor Authentication
+    Default: OPTIONAL
+    AllowedValues:
+      - 'OFF'
+      - OPTIONAL
+      - 'ON'
+  
+  PasswordMinimumLength:
+    Type: Number
+    Description: Minimum password length
+    Default: 8
+    MinValue: 6
+    MaxValue: 99
+
+Resources:
+  # ============================================================================
+  # Cognito User Pool
+  # ============================================================================
+  
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Sub ${EnvironmentName}-user-pool
+      
+      # Account Recovery Settings
+      AccountRecoverySetting:
+        RecoveryMechanisms:
+          - Name: verified_email
+            Priority: 1
+      
+      # Admin Create User Config
+      AdminCreateUserConfig:
+        AllowAdminCreateUserOnly: false
+        InviteMessageTemplate:
+          EmailSubject: !Sub 'Your ${EnvironmentName} account'
+          EmailMessage: 'Your username is {username} and temporary password is {####}'
+      
+      # Auto-verified Attributes
+      AutoVerifiedAttributes:
+        - email
+      
+      # Email Configuration
+      EmailConfiguration:
+        EmailSendingAccount: COGNITO_DEFAULT
+      
+      # Email Verification
+      EmailVerificationMessage: 'Your verification code is {####}'
+      EmailVerificationSubject: !Sub 'Verify your ${EnvironmentName} account'
+      
+      # MFA Configuration
+      MfaConfiguration: !Ref EnableMFA
+      EnabledMfas:
+        - SOFTWARE_TOKEN_MFA
+      
+      # Password Policy
+      Policies:
+        PasswordPolicy:
+          MinimumLength: !Ref PasswordMinimumLength
+          RequireUppercase: true
+          RequireLowercase: true
+          RequireNumbers: true
+          RequireSymbols: false
+          TemporaryPasswordValidityDays: 7
+      
+      # Standard Attributes
+      Schema:
+        - Name: email
+          AttributeDataType: String
+          Required: true
+          Mutable: true
+        - Name: name
+          AttributeDataType: String
+          Required: false
+          Mutable: true
+        - Name: preferred_username
+          AttributeDataType: String
+          Required: false
+          Mutable: true
+        # Custom Attributes
+        - Name: role
+          AttributeDataType: String
+          Mutable: true
+          DeveloperOnlyAttribute: false
+          StringAttributeConstraints:
+            MinLength: '1'
+            MaxLength: '256'
+        - Name: organization
+          AttributeDataType: String
+          Mutable: true
+          DeveloperOnlyAttribute: false
+          StringAttributeConstraints:
+            MinLength: '1'
+            MaxLength: '256'
+      
+      # Username Configuration
+      UsernameAttributes:
+        - email
+      
+      UsernameConfiguration:
+        CaseSensitive: false
+      
+      # User Attribute Update Settings
+      UserAttributeUpdateSettings:
+        AttributesRequireVerificationBeforeUpdate:
+          - email
+      
+      # Deletion Protection
+      DeletionProtection: INACTIVE
+
+  # ============================================================================
+  # Cognito User Pool Client
+  # ============================================================================
+  
+  UserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      ClientName: !Sub ${EnvironmentName}-app-client
+      UserPoolId: !Ref UserPool
+      
+      # Generate client secret for OAuth flow
+      GenerateSecret: true
+      
+      # OAuth Configuration
+      AllowedOAuthFlows:
+        - code
+      AllowedOAuthFlowsUserPoolClient: true
+      AllowedOAuthScopes:
+        - openid
+        - email
+        - profile
+      
+      # Callback URLs - Open WebUI uses /oauth/oidc/callback
+      CallbackURLs:
+        - !Sub ${CallbackURL}/oauth/oidc/callback
+        - !Sub ${CallbackURL}/oauth/callback
+      
+      # Logout URLs
+      LogoutURLs: !If
+        - HasLogoutURL
+        - [!Ref LogoutURL]
+        - !Ref AWS::NoValue
+      
+      # Supported Identity Providers
+      SupportedIdentityProviders:
+        - COGNITO
+      
+      # Token Validity
+      AccessTokenValidity: 1
+      IdTokenValidity: 1
+      RefreshTokenValidity: 30
+      TokenValidityUnits:
+        AccessToken: hours
+        IdToken: hours
+        RefreshToken: days
+      
+      # Prevent User Existence Errors
+      PreventUserExistenceErrors: ENABLED
+      
+      # Read and Write Attributes
+      ReadAttributes:
+        - email
+        - email_verified
+        - name
+        - preferred_username
+        - custom:role
+        - custom:organization
+      
+      WriteAttributes:
+        - email
+        - name
+        - preferred_username
+        - custom:role
+        - custom:organization
+      
+      # Enable token revocation
+      EnableTokenRevocation: true
+      
+      # Auth Session Validity
+      AuthSessionValidity: 3
+
+  # ============================================================================
+  # Cognito User Pool Domain
+  # ============================================================================
+  
+  UserPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      Domain: !Ref CognitoDomainPrefix
+      UserPoolId: !Ref UserPool
+
+  # ============================================================================
+  # Cognito User Pool Groups
+  # ============================================================================
+  
+  AdminGroup:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties:
+      GroupName: Admins
+      Description: Administrator users with full access
+      UserPoolId: !Ref UserPool
+      Precedence: 1
+  
+  UserGroup:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties:
+      GroupName: Users
+      Description: Standard users with basic access
+      UserPoolId: !Ref UserPool
+      Precedence: 10
+
+Conditions:
+  HasLogoutURL: !Not [!Equals [!Ref LogoutURL, '']]
+
+Outputs:
+  UserPoolId:
+    Description: Cognito User Pool ID
+    Value: !Ref UserPool
+  
+  UserPoolArn:
+    Description: Cognito User Pool ARN
+    Value: !GetAtt UserPool.Arn
+  
+  UserPoolClientId:
+    Description: Cognito User Pool Client ID
+    Value: !Ref UserPoolClient
+  
+  UserPoolDomain:
+    Description: Cognito User Pool Domain
+    Value: !Ref UserPoolDomain
+  
+  CognitoHostedUIURL:
+    Description: Cognito Hosted UI URL
+    Value: !Sub https://${UserPoolDomain}.auth.${AWS::Region}.amazoncognito.com
+  
+  OpenIDProviderURL:
+    Description: OpenID Provider URL for OAuth configuration
+    Value: !Sub https://cognito-idp.${AWS::Region}.amazonaws.com/${UserPool}/.well-known/openid-configuration

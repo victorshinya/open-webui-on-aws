@@ -1,0 +1,122 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Security Groups for Open WebUI deployment - ALB, ECS, and EFS'
+
+Parameters:
+  EnvironmentName:
+    Type: String
+    Description: Environment name prefix for resources
+    Default: open-webui
+  
+  VPC:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC ID where security groups will be created
+
+Resources:
+  # ============================================================================
+  # ALB Security Group
+  # ============================================================================
+  
+  ALBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub ${EnvironmentName}-alb-sg
+      GroupDescription: Security group for Application Load Balancer - allows HTTPS from internet
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        # Allow HTTPS from anywhere
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+          Description: Allow HTTPS from internet
+        # Allow HTTP (for redirect to HTTPS)
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+          Description: Allow HTTP from internet (redirect to HTTPS)
+      SecurityGroupEgress:
+        # Allow all outbound traffic to ECS tasks
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+          Description: Allow all outbound traffic
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName}-alb-sg
+        - Key: Environment
+          Value: !Ref EnvironmentName
+        - Key: Component
+          Value: LoadBalancer
+
+  # ============================================================================
+  # ECS Security Group
+  # ============================================================================
+  
+  ECSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub ${EnvironmentName}-ecs-sg
+      GroupDescription: Security group for ECS tasks - allows traffic from ALB only
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        # Allow traffic from ALB on container port
+        - IpProtocol: tcp
+          FromPort: 8080
+          ToPort: 8080
+          SourceSecurityGroupId: !Ref ALBSecurityGroup
+          Description: Allow traffic from ALB
+      SecurityGroupEgress:
+        # Allow all outbound traffic (for pulling images, accessing AWS services, etc.)
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+          Description: Allow all outbound traffic
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName}-ecs-sg
+        - Key: Environment
+          Value: !Ref EnvironmentName
+        - Key: Component
+          Value: ECS
+
+  # ============================================================================
+  # EFS Security Group
+  # ============================================================================
+  
+  EFSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub ${EnvironmentName}-efs-sg
+      GroupDescription: Security group for EFS - allows NFS from ECS tasks only
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        # Allow NFS from ECS tasks
+        - IpProtocol: tcp
+          FromPort: 2049
+          ToPort: 2049
+          SourceSecurityGroupId: !Ref ECSSecurityGroup
+          Description: Allow NFS from ECS tasks
+      SecurityGroupEgress:
+        # No outbound rules needed for EFS
+        - IpProtocol: -1
+          CidrIp: 127.0.0.1/32
+          Description: No outbound traffic allowed
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName}-efs-sg
+        - Key: Environment
+          Value: !Ref EnvironmentName
+        - Key: Component
+          Value: EFS
+
+Outputs:
+  ALBSecurityGroup:
+    Description: Security group ID for Application Load Balancer
+    Value: !Ref ALBSecurityGroup
+  
+  ECSSecurityGroup:
+    Description: Security group ID for ECS tasks
+    Value: !Ref ECSSecurityGroup
+  
+  EFSSecurityGroup:
+    Description: Security group ID for EFS
+    Value: !Ref EFSSecurityGroup

@@ -1,0 +1,247 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'EFS storage infrastructure for Open WebUI persistent data'
+
+Parameters:
+  EnvironmentName:
+    Type: String
+    Description: Environment name prefix for resources
+    Default: open-webui
+  
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet::Id
+    Description: Private subnet in AZ1 for EFS mount target
+  
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet::Id
+    Description: Private subnet in AZ2 for EFS mount target
+  
+  EFSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup::Id
+    Description: Security group for EFS mount targets
+  
+  PerformanceMode:
+    Type: String
+    Description: EFS performance mode
+    Default: generalPurpose
+    AllowedValues:
+      - generalPurpose
+      - maxIO
+  
+  ThroughputMode:
+    Type: String
+    Description: EFS throughput mode
+    Default: bursting
+    AllowedValues:
+      - bursting
+      - provisioned
+      - elastic
+  
+  ProvisionedThroughputInMibps:
+    Type: Number
+    Description: Provisioned throughput in MiB/s (only used if ThroughputMode is provisioned)
+    Default: 10
+    MinValue: 1
+    MaxValue: 1024
+  
+  EnableBackup:
+    Type: String
+    Description: Enable automatic backups
+    Default: 'true'
+    AllowedValues:
+      - 'true'
+      - 'false'
+  
+  TransitionToIA:
+    Type: String
+    Description: Days until files transition to Infrequent Access storage class
+    Default: '30'
+    AllowedValues:
+      - 'NONE'
+      - '7'
+      - '14'
+      - '30'
+      - '60'
+      - '90'
+
+Conditions:
+  UseProvisionedThroughput: !Equals [!Ref ThroughputMode, 'provisioned']
+  EnableIATransition: !Not [!Equals [!Ref TransitionToIA, 'NONE']]
+  EnableBackup: !Equals [!Ref EnableBackup, 'true']
+
+Resources:
+  # ============================================================================
+  # KMS Key for EFS Encryption
+  # ============================================================================
+  
+  EFSKMSKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: !Sub KMS key for ${EnvironmentName} EFS encryption
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: Enable IAM User Permissions
+            Effect: Allow
+            Principal:
+              AWS: !Sub arn:aws:iam::${AWS::AccountId}:root
+            Action: kms:*
+            Resource: '*'
+          - Sid: Allow EFS to use the key
+            Effect: Allow
+            Principal:
+              Service: elasticfilesystem.amazonaws.com
+            Action:
+              - kms:Decrypt
+              - kms:DescribeKey
+              - kms:Encrypt
+              - kms:ReEncrypt*
+              - kms:GenerateDataKey
+              - kms:CreateGrant
+            Resource: '*'
+            Condition:
+              StringEquals:
+                kms:ViaService: !Sub elasticfilesystem.${AWS::Region}.amazonaws.com
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName}-efs-kms-key
+        - Key: Environment
+          Value: !Ref EnvironmentName
+  
+  EFSKMSKeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: !Sub alias/${EnvironmentName}-efs
+      TargetKeyId: !Ref EFSKMSKey
+
+  # ============================================================================
+  # EFS File System
+  # ============================================================================
+  
+  FileSystem:
+    Type: AWS::EFS::FileSystem
+    Properties:
+      Encrypted: true
+      KmsKeyId: !Ref EFSKMSKey
+      PerformanceMode: !Ref PerformanceMode
+      ThroughputMode: !Ref ThroughputMode
+      ProvisionedThroughputInMibps: !If
+        - UseProvisionedThroughput
+        - !Ref ProvisionedThroughputInMibps
+        - !Ref AWS::NoValue
+      LifecyclePolicies:
+        - !If
+          - EnableIATransition
+          - TransitionToIA: !Sub AFTER_${TransitionToIA}_DAYS
+          - !Ref AWS::NoValue
+        - TransitionToPrimaryStorageClass: AFTER_1_ACCESS
+      BackupPolicy:
+        Status: !If
+          - EnableBackup
+          - ENABLED
+          - DISABLED
+      FileSystemTags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName}-efs
+        - Key: Environment
+          Value: !Ref EnvironmentName
+
+  # ============================================================================
+  # EFS Mount Targets
+  # ============================================================================
+  
+  MountTarget1:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref FileSystem
+      SubnetId: !Ref PrivateSubnet1
+      SecurityGroups:
+        - !Ref EFSSecurityGroup
+
+  MountTarget2:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref FileSystem
+      SubnetId: !Ref PrivateSubnet2
+      SecurityGroups:
+        - !Ref EFSSecurityGroup
+
+  # ============================================================================
+  # EFS Access Points
+  # ============================================================================
+  
+  OpenWebUIAccessPoint:
+    Type: AWS::EFS::AccessPoint
+    Properties:
+      FileSystemId: !Ref FileSystem
+      PosixUser:
+        Uid: '1000'
+        Gid: '1000'
+      RootDirectory:
+        Path: /open-webui
+        CreationInfo:
+          OwnerUid: '1000'
+          OwnerGid: '1000'
+          Permissions: '755'
+      AccessPointTags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName}-open-webui-ap
+        - Key: Environment
+          Value: !Ref EnvironmentName
+        - Key: Component
+          Value: OpenWebUI
+
+  # ============================================================================
+  # CloudWatch Alarms for EFS Monitoring
+  # ============================================================================
+  
+  EFSBurstCreditBalanceAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: EnableBackup
+    Properties:
+      AlarmName: !Sub ${EnvironmentName}-efs-burst-credit-balance-low
+      AlarmDescription: Alert when EFS burst credit balance is low
+      MetricName: BurstCreditBalance
+      Namespace: AWS/EFS
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 1000000000000
+      ComparisonOperator: LessThanThreshold
+      Dimensions:
+        - Name: FileSystemId
+          Value: !Ref FileSystem
+      TreatMissingData: notBreaching
+
+Outputs:
+  FileSystemId:
+    Description: EFS File System ID
+    Value: !Ref FileSystem
+  
+  FileSystemArn:
+    Description: EFS File System ARN
+    Value: !GetAtt FileSystem.Arn
+  
+  OpenWebUIAccessPointId:
+    Description: EFS Access Point ID for Open WebUI
+    Value: !Ref OpenWebUIAccessPoint
+  
+  OpenWebUIAccessPointArn:
+    Description: EFS Access Point ARN for Open WebUI
+    Value: !GetAtt OpenWebUIAccessPoint.Arn
+  
+  MountTarget1Id:
+    Description: EFS Mount Target ID in AZ1
+    Value: !Ref MountTarget1
+  
+  MountTarget2Id:
+    Description: EFS Mount Target ID in AZ2
+    Value: !Ref MountTarget2
+  
+  KMSKeyId:
+    Description: KMS Key ID for EFS encryption
+    Value: !Ref EFSKMSKey
+  
+  KMSKeyArn:
+    Description: KMS Key ARN for EFS encryption
+    Value: !GetAtt EFSKMSKey.Arn

@@ -1,0 +1,58 @@
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Docker volumes
+data/
+
+# AWS credentials
+.aws/
+
+# AWS parameters
+my-aws-parameters.json
+
+# CloudFormation outputs
+cloudformation-outputs.json
+
+# Logs
+*.log
+logs/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Secrets
+secrets/
+*.pem
+*.key
+
+# Node modules (if using any Node.js tools)
+node_modules/
+
+# Python (if using any Python tools)
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+venv/
+env/
+
+# Terraform (if used alongside CloudFormation)
+.terraform/
+*.tfstate
+*.tfstate.backup
+.terraform.lock.hcl

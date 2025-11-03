@@ -1,0 +1,38 @@
+version: '3.8'
+
+services:
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:main
+    container_name: open-webui
+    restart: unless-stopped
+    env_file:
+      - .env.local
+    
+    ports:
+      - "3000:8080"
+    
+    volumes:
+      - open-webui-data:/app/backend/data
+    
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    
+    labels:
+      - "com.open-webui.description=Open WebUI with Cognito Authentication"
+      - "com.open-webui.environment=local"
+
+volumes:
+  open-webui-data:
+    driver: local
+    name: open-webui-data
+
+networks:
+  default:
+    name: open-webui-network

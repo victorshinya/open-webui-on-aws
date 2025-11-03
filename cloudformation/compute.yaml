@@ -1,0 +1,423 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'ECS compute infrastructure for Open WebUI - Cluster, Task Definition, and Service'
+
+Parameters:
+  EnvironmentName:
+    Type: String
+    Description: Environment name prefix for resources
+    Default: open-webui
+  
+  PrivateSubnets:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Private subnets for ECS tasks
+  
+  ECSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup::Id
+    Description: Security group for ECS tasks
+  
+  TargetGroupArn:
+    Type: String
+    Description: ARN of the ALB target group
+  
+  FileSystemId:
+    Type: String
+    Description: EFS File System ID
+  
+  AccessPointId:
+    Type: String
+    Description: EFS Access Point ID for Open WebUI
+  
+  UserPoolId:
+    Type: String
+    Description: Cognito User Pool ID
+  
+  UserPoolClientId:
+    Type: String
+    Description: Cognito User Pool Client ID
+  
+  CognitoRegion:
+    Type: String
+    Description: AWS Region for Cognito
+    Default: us-east-1
+  
+  OpenIDProviderURL:
+    Type: String
+    Description: OpenID Connect provider URL for OAuth
+  
+  CallbackURL:
+    Type: String
+    Description: OAuth callback URL
+  
+  CognitoClientSecretArn:
+    Type: String
+    Description: ARN of the Cognito client secret in Secrets Manager
+  
+  WebUISecretKeyArn:
+    Type: String
+    Description: ARN of the WebUI secret key in Secrets Manager
+  
+  OpenWebUIImage:
+    Type: String
+    Description: Docker image for Open WebUI
+    Default: ghcr.io/open-webui/open-webui:main
+  
+  TaskCPU:
+    Type: String
+    Description: CPU units for the task (256 = 0.25 vCPU)
+    Default: '512'
+    AllowedValues:
+      - '256'
+      - '512'
+      - '1024'
+      - '2048'
+      - '4096'
+  
+  TaskMemory:
+    Type: String
+    Description: Memory for the task in MB
+    Default: '1024'
+    AllowedValues:
+      - '512'
+      - '1024'
+      - '2048'
+      - '4096'
+      - '8192'
+      - '16384'
+  
+  DesiredCount:
+    Type: Number
+    Description: Desired number of tasks
+    Default: 1
+    MinValue: 1
+    MaxValue: 10
+  
+  MinCapacity:
+    Type: Number
+    Description: Minimum number of tasks for auto-scaling
+    Default: 1
+    MinValue: 1
+  
+  MaxCapacity:
+    Type: Number
+    Description: Maximum number of tasks for auto-scaling
+    Default: 4
+    MinValue: 1
+    MaxValue: 20
+
+Resources:
+  # ============================================================================
+  # ECS Cluster
+  # ============================================================================
+  
+  ECSCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Sub ${EnvironmentName}-cluster
+      ClusterSettings:
+        - Name: containerInsights
+          Value: enabled
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName}-cluster
+        - Key: Environment
+          Value: !Ref EnvironmentName
+
+  # ============================================================================
+  # CloudWatch Log Group
+  # ============================================================================
+  
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /ecs/${EnvironmentName}/open-webui
+      RetentionInDays: 7
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName}-logs
+        - Key: Environment
+          Value: !Ref EnvironmentName
+
+  # ============================================================================
+  # IAM Roles
+  # ============================================================================
+  
+  # ECS Task Execution Role (for ECS to pull images, write logs, access secrets)
+  TaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${EnvironmentName}-task-execution-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Policies:
+        - PolicyName: SecretsManagerAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource: !Sub arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${EnvironmentName}/*
+        - PolicyName: KMSAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - kms:Decrypt
+                  - kms:DescribeKey
+                Resource: '*'
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName}-task-execution-role
+        - Key: Environment
+          Value: !Ref EnvironmentName
+  
+  # ECS Task Role (for application to access AWS services)
+  TaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${EnvironmentName}-task-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: CognitoAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - cognito-idp:GetUser
+                  - cognito-idp:ListUsers
+                Resource: !Sub arn:aws:cognito-idp:${CognitoRegion}:${AWS::AccountId}:userpool/${UserPoolId}
+        - PolicyName: EFSAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - elasticfilesystem:ClientMount
+                  - elasticfilesystem:ClientWrite
+                  - elasticfilesystem:DescribeFileSystems
+                Resource: !Sub arn:aws:elasticfilesystem:${AWS::Region}:${AWS::AccountId}:file-system/${FileSystemId}
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName}-task-role
+        - Key: Environment
+          Value: !Ref EnvironmentName
+
+  # ============================================================================
+  # ECS Task Definition
+  # ============================================================================
+  
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub ${EnvironmentName}-open-webui
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      Cpu: !Ref TaskCPU
+      Memory: !Ref TaskMemory
+      ExecutionRoleArn: !GetAtt TaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt TaskRole.Arn
+      
+      ContainerDefinitions:
+        - Name: open-webui
+          Image: !Ref OpenWebUIImage
+          Essential: true
+          User: "1000:1000"
+          
+          PortMappings:
+            - ContainerPort: 8080
+              Protocol: tcp
+          
+          Environment:
+            - Name: OAUTH_PROVIDER_NAME
+              Value: AWS Cognito
+            - Name: OAUTH_CLIENT_ID
+              Value: !Ref UserPoolClientId
+            - Name: OPENID_PROVIDER_URL
+              Value: !Ref OpenIDProviderURL
+            - Name: OAUTH_SCOPES
+              Value: openid profile email
+            - Name: OAUTH_REDIRECT_URI
+              Value: !Ref CallbackURL
+            - Name: ENABLE_OAUTH_SIGNUP
+              Value: 'true'
+            - Name: OAUTH_MERGE_ACCOUNTS_BY_EMAIL
+              Value: 'true'
+            - Name: WEBUI_AUTH
+              Value: 'true'
+            - Name: ENABLE_SIGNUP
+              Value: 'false'
+            - Name: DEFAULT_USER_ROLE
+              Value: user
+            - Name: DATA_DIR
+              Value: /mnt/efs
+          
+          Secrets:
+            - Name: OAUTH_CLIENT_SECRET
+              ValueFrom: !Sub "${CognitoClientSecretArn}:client_secret::"
+            - Name: WEBUI_SECRET_KEY
+              ValueFrom: !Ref WebUISecretKeyArn
+          
+          MountPoints:
+            - SourceVolume: efs-storage
+              ContainerPath: /mnt/efs
+              ReadOnly: false
+          
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref LogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: open-webui
+          
+          HealthCheck:
+            Command:
+              - CMD-SHELL
+              - curl -f http://localhost:8080/ || exit 1
+            Interval: 30
+            Timeout: 5
+            Retries: 3
+            StartPeriod: 60
+      
+      Volumes:
+        - Name: efs-storage
+          EFSVolumeConfiguration:
+            FilesystemId: !Ref FileSystemId
+            TransitEncryption: ENABLED
+            AuthorizationConfig:
+              AccessPointId: !Ref AccessPointId
+              IAM: ENABLED
+      
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName}-task-definition
+        - Key: Environment
+          Value: !Ref EnvironmentName
+
+  # ============================================================================
+  # ECS Service
+  # ============================================================================
+  
+  ECSService:
+    Type: AWS::ECS::Service
+    Properties:
+      ServiceName: !Sub ${EnvironmentName}-service
+      Cluster: !Ref ECSCluster
+      TaskDefinition: !Ref TaskDefinition
+      DesiredCount: !Ref DesiredCount
+      LaunchType: FARGATE
+      PlatformVersion: LATEST
+      
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: DISABLED
+          Subnets: !Ref PrivateSubnets
+          SecurityGroups:
+            - !Ref ECSSecurityGroup
+      
+      LoadBalancers:
+        - ContainerName: open-webui
+          ContainerPort: 8080
+          TargetGroupArn: !Ref TargetGroupArn
+      
+      HealthCheckGracePeriodSeconds: 120
+      
+      DeploymentConfiguration:
+        MaximumPercent: 200
+        MinimumHealthyPercent: 100
+        DeploymentCircuitBreaker:
+          Enable: true
+          Rollback: true
+      
+      EnableECSManagedTags: true
+      PropagateTags: SERVICE
+      
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName}-service
+        - Key: Environment
+          Value: !Ref EnvironmentName
+
+  # ============================================================================
+  # Auto Scaling
+  # ============================================================================
+  
+  AutoScalingTarget:
+    Type: AWS::ApplicationAutoScaling::ScalableTarget
+    Properties:
+      MaxCapacity: !Ref MaxCapacity
+      MinCapacity: !Ref MinCapacity
+      ResourceId: !Sub service/${ECSCluster}/${ECSService.Name}
+      RoleARN: !Sub arn:aws:iam::${AWS::AccountId}:role/aws-service-role/ecs.application-autoscaling.amazonaws.com/AWSServiceRoleForApplicationAutoScaling_ECSService
+      ScalableDimension: ecs:service:DesiredCount
+      ServiceNamespace: ecs
+  
+  AutoScalingPolicyCPU:
+    Type: AWS::ApplicationAutoScaling::ScalingPolicy
+    Properties:
+      PolicyName: !Sub ${EnvironmentName}-cpu-scaling
+      PolicyType: TargetTrackingScaling
+      ScalingTargetId: !Ref AutoScalingTarget
+      TargetTrackingScalingPolicyConfiguration:
+        PredefinedMetricSpecification:
+          PredefinedMetricType: ECSServiceAverageCPUUtilization
+        TargetValue: 70.0
+        ScaleInCooldown: 300
+        ScaleOutCooldown: 60
+  
+  AutoScalingPolicyMemory:
+    Type: AWS::ApplicationAutoScaling::ScalingPolicy
+    Properties:
+      PolicyName: !Sub ${EnvironmentName}-memory-scaling
+      PolicyType: TargetTrackingScaling
+      ScalingTargetId: !Ref AutoScalingTarget
+      TargetTrackingScalingPolicyConfiguration:
+        PredefinedMetricSpecification:
+          PredefinedMetricType: ECSServiceAverageMemoryUtilization
+        TargetValue: 80.0
+        ScaleInCooldown: 300
+        ScaleOutCooldown: 60
+
+Outputs:
+  ECSCluster:
+    Description: ECS Cluster name
+    Value: !Ref ECSCluster
+  
+  ECSClusterArn:
+    Description: ECS Cluster ARN
+    Value: !GetAtt ECSCluster.Arn
+  
+  ECSService:
+    Description: ECS Service name
+    Value: !GetAtt ECSService.Name
+  
+  TaskDefinition:
+    Description: ECS Task Definition ARN
+    Value: !Ref TaskDefinition
+  
+  TaskExecutionRoleArn:
+    Description: ECS Task Execution Role ARN
+    Value: !GetAtt TaskExecutionRole.Arn
+  
+  TaskRoleArn:
+    Description: ECS Task Role ARN
+    Value: !GetAtt TaskRole.Arn
+  
+  LogGroup:
+    Description: CloudWatch Log Group name
+    Value: !Ref LogGroup

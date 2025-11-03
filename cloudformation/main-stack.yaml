@@ -1,0 +1,726 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Master CloudFormation stack for Open WebUI deployment with Cognito authentication on AWS'
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: Environment Configuration
+        Parameters:
+          - EnvironmentName
+          - AlarmEmail
+      
+      - Label:
+          default: Network Configuration
+        Parameters:
+          - VpcCIDR
+          - PublicSubnet1CIDR
+          - PublicSubnet2CIDR
+          - PrivateSubnet1CIDR
+          - PrivateSubnet2CIDR
+      
+      - Label:
+          default: Cognito Configuration
+        Parameters:
+          - CognitoDomainPrefix
+          - EnableMFA
+          - PasswordMinimumLength
+      
+      - Label:
+          default: SSL/TLS Configuration
+        Parameters:
+          - CertificateArn
+          - DomainName
+      
+      - Label:
+          default: Compute Configuration
+        Parameters:
+          - OpenWebUIImage
+          - TaskCPU
+          - TaskMemory
+          - DesiredCount
+          - MinCapacity
+          - MaxCapacity
+      
+      - Label:
+          default: Storage Configuration
+        Parameters:
+          - PerformanceMode
+          - ThroughputMode
+          - TransitionToIA
+          - EnableBackup
+      
+      - Label:
+          default: Monitoring Configuration
+        Parameters:
+          - LogRetentionDays
+    
+    ParameterLabels:
+      EnvironmentName:
+        default: Environment Name
+      VpcCIDR:
+        default: VPC CIDR Block
+      CognitoDomainPrefix:
+        default: Cognito Domain Prefix
+      CertificateArn:
+        default: ACM Certificate ARN
+      DomainName:
+        default: Custom Domain Name (Optional)
+      TaskCPU:
+        default: Task CPU Units
+      TaskMemory:
+        default: Task Memory (MB)
+
+Parameters:
+  # ============================================================================
+  # Environment Configuration
+  # ============================================================================
+  
+  EnvironmentName:
+    Type: String
+    Description: Environment name used as prefix for all resources
+    Default: open-webui
+    AllowedPattern: ^[a-z0-9-]+$
+    ConstraintDescription: Must contain only lowercase letters, numbers, and hyphens
+    MinLength: 3
+    MaxLength: 32
+  
+  AlarmEmail:
+    Type: String
+    Description: Email address for CloudWatch alarm notifications (leave empty to skip)
+    Default: ''
+    AllowedPattern: ^([\w\.\-]+@[\w\.\-]+\.\w+)?$
+    ConstraintDescription: Must be a valid email address or empty
+
+  # ============================================================================
+  # Network Configuration
+  # ============================================================================
+  
+  VpcCIDR:
+    Type: String
+    Description: CIDR block for VPC
+    Default: 10.0.0.0/16
+    AllowedPattern: ^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\/([0-9]|[1-2][0-9]|3[0-2]))$
+  
+  PublicSubnet1CIDR:
+    Type: String
+    Description: CIDR block for public subnet in AZ1
+    Default: 10.0.1.0/24
+    AllowedPattern: ^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\/([0-9]|[1-2][0-9]|3[0-2]))$
+  
+  PublicSubnet2CIDR:
+    Type: String
+    Description: CIDR block for public subnet in AZ2
+    Default: 10.0.2.0/24
+    AllowedPattern: ^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\/([0-9]|[1-2][0-9]|3[0-2]))$
+  
+  PrivateSubnet1CIDR:
+    Type: String
+    Description: CIDR block for private subnet in AZ1
+    Default: 10.0.11.0/24
+    AllowedPattern: ^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\/([0-9]|[1-2][0-9]|3[0-2]))$
+  
+  PrivateSubnet2CIDR:
+    Type: String
+    Description: CIDR block for private subnet in AZ2
+    Default: 10.0.12.0/24
+    AllowedPattern: ^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\/([0-9]|[1-2][0-9]|3[0-2]))$
+
+  # ============================================================================
+  # Cognito Configuration
+  # ============================================================================
+  
+  CognitoDomainPrefix:
+    Type: String
+    Description: Unique domain prefix for Cognito hosted UI (must be globally unique)
+    AllowedPattern: ^[a-z0-9-]+$
+    ConstraintDescription: Must contain only lowercase letters, numbers, and hyphens
+    MinLength: 1
+    MaxLength: 63
+  
+  EnableMFA:
+    Type: String
+    Description: Multi-Factor Authentication setting
+    Default: OPTIONAL
+    AllowedValues:
+      - 'OFF'
+      - OPTIONAL
+      - 'ON'
+  
+  PasswordMinimumLength:
+    Type: Number
+    Description: Minimum password length
+    Default: 8
+    MinValue: 6
+    MaxValue: 99
+
+  # ============================================================================
+  # SSL/TLS Configuration
+  # ============================================================================
+  
+  CertificateArn:
+    Type: String
+    Description: ARN of ACM certificate for HTTPS (must be in same region)
+    AllowedPattern: ^arn:aws:acm:.*
+    ConstraintDescription: Must be a valid ACM certificate ARN
+  
+  DomainName:
+    Type: String
+    Description: Custom domain name for Open WebUI (optional, leave empty to use ALB DNS)
+    Default: ''
+    AllowedPattern: ^(([a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,})?$
+    ConstraintDescription: Must be a valid domain name or empty
+
+  # ============================================================================
+  # Compute Configuration
+  # ============================================================================
+  
+  OpenWebUIImage:
+    Type: String
+    Description: Docker image for Open WebUI
+    Default: ghcr.io/open-webui/open-webui:main
+  
+  TaskCPU:
+    Type: String
+    Description: CPU units for ECS task (256 = 0.25 vCPU, 512 = 0.5 vCPU, etc.)
+    Default: '512'
+    AllowedValues:
+      - '256'
+      - '512'
+      - '1024'
+      - '2048'
+      - '4096'
+  
+  TaskMemory:
+    Type: String
+    Description: Memory for ECS task in MB
+    Default: '1024'
+    AllowedValues:
+      - '512'
+      - '1024'
+      - '2048'
+      - '4096'
+      - '8192'
+      - '16384'
+  
+  DesiredCount:
+    Type: Number
+    Description: Desired number of ECS tasks
+    Default: 1
+    MinValue: 1
+    MaxValue: 10
+  
+  MinCapacity:
+    Type: Number
+    Description: Minimum number of tasks for auto-scaling
+    Default: 1
+    MinValue: 1
+  
+  MaxCapacity:
+    Type: Number
+    Description: Maximum number of tasks for auto-scaling
+    Default: 4
+    MinValue: 1
+    MaxValue: 20
+
+  # ============================================================================
+  # Storage Configuration
+  # ============================================================================
+  
+  PerformanceMode:
+    Type: String
+    Description: EFS performance mode
+    Default: generalPurpose
+    AllowedValues:
+      - generalPurpose
+      - maxIO
+  
+  ThroughputMode:
+    Type: String
+    Description: EFS throughput mode
+    Default: bursting
+    AllowedValues:
+      - bursting
+      - elastic
+  
+  TransitionToIA:
+    Type: String
+    Description: Days until files transition to Infrequent Access storage
+    Default: '30'
+    AllowedValues:
+      - 'NONE'
+      - '7'
+      - '14'
+      - '30'
+      - '60'
+      - '90'
+  
+  EnableBackup:
+    Type: String
+    Description: Enable automatic EFS backups
+    Default: 'true'
+    AllowedValues:
+      - 'true'
+      - 'false'
+
+  # ============================================================================
+  # Monitoring Configuration
+  # ============================================================================
+  
+  LogRetentionDays:
+    Type: Number
+    Description: Number of days to retain CloudWatch logs
+    Default: 7
+    AllowedValues:
+      - 1
+      - 3
+      - 5
+      - 7
+      - 14
+      - 30
+      - 60
+      - 90
+      - 180
+      - 365
+  
+  # ============================================================================
+  # Template Storage Configuration
+  # ============================================================================
+  
+  TemplatesBucket:
+    Type: String
+    Description: S3 bucket containing CloudFormation templates (nested stacks)
+    MinLength: 3
+    MaxLength: 63
+
+Conditions:
+  HasCustomDomain: !Not [!Equals [!Ref DomainName, '']]
+
+Resources:
+  # ============================================================================
+  # Network Stack
+  # ============================================================================
+  
+  NetworkStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub https://s3.${AWS::Region}.amazonaws.com/${TemplatesBucket}/network.yaml
+      Parameters:
+        EnvironmentName: !Ref EnvironmentName
+        VpcCIDR: !Ref VpcCIDR
+        PublicSubnet1CIDR: !Ref PublicSubnet1CIDR
+        PublicSubnet2CIDR: !Ref PublicSubnet2CIDR
+        PrivateSubnet1CIDR: !Ref PrivateSubnet1CIDR
+        PrivateSubnet2CIDR: !Ref PrivateSubnet2CIDR
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName}-network-stack
+        - Key: Environment
+          Value: !Ref EnvironmentName
+  
+  # ============================================================================
+  # Security Groups Stack
+  # ============================================================================
+  
+  SecurityGroupsStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn: NetworkStack
+    Properties:
+      TemplateURL: !Sub https://s3.${AWS::Region}.amazonaws.com/${TemplatesBucket}/security-groups.yaml
+      Parameters:
+        EnvironmentName: !Ref EnvironmentName
+        VPC: !GetAtt NetworkStack.Outputs.VPC
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName}-security-groups-stack
+        - Key: Environment
+          Value: !Ref EnvironmentName
+  
+  # ============================================================================
+  # Cognito Stack
+  # ============================================================================
+  
+  CognitoStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn: LoadBalancerStack
+    Properties:
+      TemplateURL: !Sub https://s3.${AWS::Region}.amazonaws.com/${TemplatesBucket}/cognito.yaml
+      Parameters:
+        EnvironmentName: !Ref EnvironmentName
+        CallbackURL: !If
+          - HasCustomDomain
+          - !Sub https://${DomainName}
+          - !Sub https://${LoadBalancerStack.Outputs.LoadBalancerDNSName}
+        LogoutURL: !If
+          - HasCustomDomain
+          - !Sub https://${DomainName}
+          - !Sub https://${LoadBalancerStack.Outputs.LoadBalancerDNSName}
+        CognitoDomainPrefix: !Ref CognitoDomainPrefix
+        EnableMFA: !Ref EnableMFA
+        PasswordMinimumLength: !Ref PasswordMinimumLength
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName}-cognito-stack
+        - Key: Environment
+          Value: !Ref EnvironmentName
+  
+  # ============================================================================
+  # Secrets Manager - Store Cognito Client Secret
+  # ============================================================================
+  
+  # ============================================================================
+  # Lambda Function to Populate Cognito Client Secret
+  # ============================================================================
+  
+  PopulateSecretLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: CognitoAndSecretsAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - cognito-idp:DescribeUserPoolClient
+                Resource: !GetAtt CognitoStack.Outputs.UserPoolArn
+              - Effect: Allow
+                Action:
+                  - secretsmanager:PutSecretValue
+                Resource: !Ref CognitoClientSecret
+  
+  PopulateSecretLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub ${EnvironmentName}-populate-cognito-secret
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt PopulateSecretLambdaRole.Arn
+      Timeout: 30
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import cfnresponse
+          
+          cognito = boto3.client('cognito-idp')
+          secrets = boto3.client('secretsmanager')
+          
+          def handler(event, context):
+              try:
+                  if event['RequestType'] == 'Delete':
+                      cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+                      return
+                  
+                  user_pool_id = event['ResourceProperties']['UserPoolId']
+                  client_id = event['ResourceProperties']['ClientId']
+                  secret_arn = event['ResourceProperties']['SecretArn']
+                  
+                  # Get client secret from Cognito
+                  response = cognito.describe_user_pool_client(
+                      UserPoolId=user_pool_id,
+                      ClientId=client_id
+                  )
+                  client_secret = response['UserPoolClient']['ClientSecret']
+                  
+                  # Update Secrets Manager
+                  secrets.put_secret_value(
+                      SecretId=secret_arn,
+                      SecretString=json.dumps({'client_secret': client_secret})
+                  )
+                  
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+              except Exception as e:
+                  print(f"Error: {str(e)}")
+                  cfnresponse.send(event, context, cfnresponse.FAILED, {})
+  
+  PopulateSecretCustomResource:
+    Type: Custom::PopulateSecret
+    DependsOn:
+      - CognitoClientSecret
+      - PopulateSecretLambda
+    Properties:
+      ServiceToken: !GetAtt PopulateSecretLambda.Arn
+      UserPoolId: !GetAtt CognitoStack.Outputs.UserPoolId
+      ClientId: !GetAtt CognitoStack.Outputs.UserPoolClientId
+      SecretArn: !Ref CognitoClientSecret
+
+  # ============================================================================
+  # Secrets Manager Secrets
+  # ============================================================================
+  
+  CognitoClientSecret:
+    Type: AWS::SecretsManager::Secret
+    DependsOn: CognitoStack
+    Properties:
+      Name: !Sub ${EnvironmentName}/cognito-client-secret
+      Description: Cognito User Pool Client Secret for Open WebUI
+      SecretString: !Sub |
+        {
+          "client_secret": "PLACEHOLDER_UPDATE_AFTER_STACK_CREATION"
+        }
+      KmsKeyId: alias/aws/secretsmanager
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName}-cognito-client-secret
+        - Key: Environment
+          Value: !Ref EnvironmentName
+  
+  WebUISecretKey:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub ${EnvironmentName}/webui-secret-key
+      Description: Secret key for Open WebUI session encryption
+      GenerateSecretString:
+        SecretStringTemplate: '{}'
+        GenerateStringKey: secret_key
+        PasswordLength: 64
+        ExcludeCharacters: '"@/\'
+      KmsKeyId: alias/aws/secretsmanager
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName}-webui-secret-key
+        - Key: Environment
+          Value: !Ref EnvironmentName
+  
+  # ============================================================================
+  # Storage Stack
+  # ============================================================================
+  
+  StorageStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn:
+      - NetworkStack
+      - SecurityGroupsStack
+    Properties:
+      TemplateURL: !Sub https://s3.${AWS::Region}.amazonaws.com/${TemplatesBucket}/storage.yaml
+      Parameters:
+        EnvironmentName: !Ref EnvironmentName
+        PrivateSubnet1: !GetAtt NetworkStack.Outputs.PrivateSubnet1
+        PrivateSubnet2: !GetAtt NetworkStack.Outputs.PrivateSubnet2
+        EFSSecurityGroup: !GetAtt SecurityGroupsStack.Outputs.EFSSecurityGroup
+        PerformanceMode: !Ref PerformanceMode
+        ThroughputMode: !Ref ThroughputMode
+        TransitionToIA: !Ref TransitionToIA
+        EnableBackup: !Ref EnableBackup
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName}-storage-stack
+        - Key: Environment
+          Value: !Ref EnvironmentName
+  
+  # ============================================================================
+  # Load Balancer Stack
+  # ============================================================================
+  
+  LoadBalancerStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn:
+      - NetworkStack
+      - SecurityGroupsStack
+    Properties:
+      TemplateURL: !Sub https://s3.${AWS::Region}.amazonaws.com/${TemplatesBucket}/loadbalancer.yaml
+      Parameters:
+        EnvironmentName: !Ref EnvironmentName
+        VPC: !GetAtt NetworkStack.Outputs.VPC
+        PublicSubnets: !GetAtt NetworkStack.Outputs.PublicSubnets
+        ALBSecurityGroup: !GetAtt SecurityGroupsStack.Outputs.ALBSecurityGroup
+        CertificateArn: !Ref CertificateArn
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName}-loadbalancer-stack
+        - Key: Environment
+          Value: !Ref EnvironmentName
+  
+  # ============================================================================
+  # Compute Stack
+  # ============================================================================
+  
+  ComputeStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn:
+      - NetworkStack
+      - SecurityGroupsStack
+      - StorageStack
+      - LoadBalancerStack
+      - CognitoStack
+      - PopulateSecretCustomResource
+      - WebUISecretKey
+    Properties:
+      TemplateURL: !Sub https://s3.${AWS::Region}.amazonaws.com/${TemplatesBucket}/compute.yaml
+      Parameters:
+        EnvironmentName: !Ref EnvironmentName
+        PrivateSubnets: !GetAtt NetworkStack.Outputs.PrivateSubnets
+        ECSSecurityGroup: !GetAtt SecurityGroupsStack.Outputs.ECSSecurityGroup
+        TargetGroupArn: !GetAtt LoadBalancerStack.Outputs.TargetGroupArn
+        FileSystemId: !GetAtt StorageStack.Outputs.FileSystemId
+        AccessPointId: !GetAtt StorageStack.Outputs.OpenWebUIAccessPointId
+        UserPoolId: !GetAtt CognitoStack.Outputs.UserPoolId
+        UserPoolClientId: !GetAtt CognitoStack.Outputs.UserPoolClientId
+        CognitoRegion: !Ref AWS::Region
+        OpenIDProviderURL: !GetAtt CognitoStack.Outputs.OpenIDProviderURL
+        CallbackURL: !If
+          - HasCustomDomain
+          - !Sub https://${DomainName}/oauth/callback
+          - !Sub https://${LoadBalancerStack.Outputs.LoadBalancerDNSName}/oauth/callback
+        CognitoClientSecretArn: !Ref CognitoClientSecret
+        WebUISecretKeyArn: !Ref WebUISecretKey
+        OpenWebUIImage: !Ref OpenWebUIImage
+        TaskCPU: !Ref TaskCPU
+        TaskMemory: !Ref TaskMemory
+        DesiredCount: !Ref DesiredCount
+        MinCapacity: !Ref MinCapacity
+        MaxCapacity: !Ref MaxCapacity
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName}-compute-stack
+        - Key: Environment
+          Value: !Ref EnvironmentName
+  
+  # ============================================================================
+  # Monitoring Stack
+  # ============================================================================
+  
+  MonitoringStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn:
+      - ComputeStack
+      - LoadBalancerStack
+    Properties:
+      TemplateURL: !Sub https://s3.${AWS::Region}.amazonaws.com/${TemplatesBucket}/monitoring.yaml
+      Parameters:
+        EnvironmentName: !Ref EnvironmentName
+        ECSCluster: !GetAtt ComputeStack.Outputs.ECSCluster
+        ECSService: !GetAtt ComputeStack.Outputs.ECSService
+        LogRetentionDays: !Ref LogRetentionDays
+        AlarmEmail: !Ref AlarmEmail
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName}-monitoring-stack
+        - Key: Environment
+          Value: !Ref EnvironmentName
+
+Outputs:
+  # ============================================================================
+  # Access Information
+  # ============================================================================
+  
+  OpenWebUIURL:
+    Description: URL to access Open WebUI
+    Value: !If
+      - HasCustomDomain
+      - !Sub https://${DomainName}
+      - !Sub https://${LoadBalancerStack.Outputs.LoadBalancerDNSName}
+    Export:
+      Name: !Sub ${EnvironmentName}-OpenWebUIURL
+  
+  LoadBalancerDNSName:
+    Description: DNS name of the Application Load Balancer
+    Value: !GetAtt LoadBalancerStack.Outputs.LoadBalancerDNSName
+    Export:
+      Name: !Sub ${EnvironmentName}-ALBDNSName
+  
+  # ============================================================================
+  # Cognito Information
+  # ============================================================================
+  
+  CognitoUserPoolId:
+    Description: Cognito User Pool ID
+    Value: !GetAtt CognitoStack.Outputs.UserPoolId
+    Export:
+      Name: !Sub ${EnvironmentName}-CognitoUserPoolId
+  
+  CognitoUserPoolClientId:
+    Description: Cognito User Pool Client ID
+    Value: !GetAtt CognitoStack.Outputs.UserPoolClientId
+    Export:
+      Name: !Sub ${EnvironmentName}-CognitoClientId
+  
+  CognitoHostedUIURL:
+    Description: Cognito Hosted UI URL
+    Value: !GetAtt CognitoStack.Outputs.CognitoHostedUIURL
+    Export:
+      Name: !Sub ${EnvironmentName}-CognitoHostedUI
+  
+  CognitoClientSecretARN:
+    Description: ARN of Secrets Manager secret containing Cognito client secret
+    Value: !Ref CognitoClientSecret
+    Export:
+      Name: !Sub ${EnvironmentName}-CognitoClientSecretARN
+  
+  # ============================================================================
+  # Infrastructure Information
+  # ============================================================================
+  
+  VPCId:
+    Description: VPC ID
+    Value: !GetAtt NetworkStack.Outputs.VPC
+    Export:
+      Name: !Sub ${EnvironmentName}-VPCId
+  
+  ECSClusterName:
+    Description: ECS Cluster name
+    Value: !GetAtt ComputeStack.Outputs.ECSCluster
+    Export:
+      Name: !Sub ${EnvironmentName}-ECSClusterName
+  
+  EFSFileSystemId:
+    Description: EFS File System ID
+    Value: !GetAtt StorageStack.Outputs.FileSystemId
+    Export:
+      Name: !Sub ${EnvironmentName}-EFSId
+  
+  # ============================================================================
+  # Monitoring Information
+  # ============================================================================
+  
+  CloudWatchDashboardURL:
+    Description: CloudWatch Dashboard URL
+    Value: !GetAtt MonitoringStack.Outputs.DashboardURL
+    Export:
+      Name: !Sub ${EnvironmentName}-DashboardURL
+  
+  ApplicationLogGroup:
+    Description: CloudWatch Log Group for application logs
+    Value: !GetAtt MonitoringStack.Outputs.ApplicationLogGroup
+    Export:
+      Name: !Sub ${EnvironmentName}-AppLogGroup
+  
+  # ============================================================================
+  # Post-Deployment Instructions
+  # ============================================================================
+  
+  PostDeploymentSteps:
+    Description: Important post-deployment steps
+    Value: !Sub |
+      ✅ Cognito Client Secret: Automatically populated by Lambda custom resource
+      
+      Next Steps:
+      
+      1. Create your first admin user in Cognito User Pool:
+         - User Pool ID: ${CognitoStack.Outputs.UserPoolId}
+         - AWS Console → Cognito → User Pools → Create User
+         - Add user to 'Admins' group for full access
+      
+      2. Access Open WebUI:
+         - URL: ${LoadBalancerStack.Outputs.LoadBalancerURL}
+         - Sign in with Cognito credentials
+      
+      3. (Optional) Configure custom domain:
+         - Create DNS record (A or CNAME) pointing to: ${LoadBalancerStack.Outputs.LoadBalancerDNSName}
+         - Certificate ARN already configured for HTTPS
+      
+      4. Monitor your deployment:
+         - CloudWatch Dashboard: ${MonitoringStack.Outputs.DashboardURL}
+         - Application Logs: ${MonitoringStack.Outputs.ApplicationLogGroup}
+      
+      For detailed documentation, see: docs/aws-deployment.md
