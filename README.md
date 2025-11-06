@@ -175,7 +175,9 @@ For issues and questions:
 
 ## License
 
-[Your License Here]
+MIT License
+
+Copyright (c) 2025 Victor Shinya
 
 ## Contributing
 
