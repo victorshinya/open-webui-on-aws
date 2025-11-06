@@ -48,8 +48,8 @@ Browser → ALB (HTTPS) → ECS Fargate → Open WebUI Container → EFS Storage
 
 1. Clone this repository:
 ```bash
-git clone <repository-url>
-cd open-webui-aws-deployment
+git clone https://github.com/victorshinya/open-webui-on-aws
+cd open-webui-on-aws
 ```
 
 2. Copy the environment template:
